@@ -34,7 +34,8 @@ from db.database import SessionLocal
 from db.models import (
     DailyPM25, County, Population,
     YearlyPM25Summary, MonthlyPM25Summary, SeasonalPM25Summary,
-    ExcessMortalitySummary, ExceedanceSummary, DecompositionSummary
+    ExcessMortalitySummary, ExceedanceSummary, DecompositionSummary,
+    PageView
 )
 
 # Suppress warnings from GeoPandas
@@ -309,6 +310,11 @@ class DownloadRequest(BaseModel):
     counties: Optional[str] = None  # Comma-separated FIPS codes or 'all'
     states: Optional[str] = None  # Comma-separated state names or 'all'
     age_groups: Optional[str] = None  # For mortality/yll only
+
+
+class PageViewRequest(BaseModel):
+    path: str
+    title: Optional[str] = None
 
 
 # Application lifespan
@@ -2197,6 +2203,58 @@ async def export_download_requests(api_key: str = Query(..., description="Admin 
     except Exception as e:
         logger.error(f"Error exporting download requests: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def insert_pageview(path: str, title: Optional[str]):
+    """Records a pageview. Runs in a background task with its own short-lived
+    session so it never holds up the request/response cycle."""
+    db = SessionLocal()
+    try:
+        db.add(PageView(path=path, title=title))
+        db.commit()
+    except SQLAlchemyError as e:
+        logger.error("Failed to record pageview: %s", str(e))
+        db.rollback()
+    finally:
+        db.close()
+
+
+@app.post("/api/track-view")
+async def track_view(view: PageViewRequest, background_tasks: BackgroundTasks):
+    """Records a pageview for basic visit counting. The insert happens in the
+    background so this always returns immediately regardless of DB latency."""
+    background_tasks.add_task(insert_pageview, view.path, view.title)
+    return {"status": "ok"}
+
+
+@app.get("/api/view-counts")
+async def get_view_counts(
+    api_key: str = Query(..., description="Admin API key"),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns total pageviews and a breakdown by path.
+    Protected endpoint - requires admin API key.
+
+    Usage: /api/view-counts?api_key=YOUR_ADMIN_API_KEY
+    """
+    admin_api_key = os.getenv("ADMIN_API_KEY")
+    if not admin_api_key:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin API key not configured on server"
+        )
+
+    if api_key != admin_api_key:
+        logger.warning("Invalid API key attempt to access view counts")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid API key"
+        )
+
+    total = db.query(func.count(PageView.id)).scalar()
+    by_path = db.query(PageView.path, func.count(PageView.id)).group_by(PageView.path).all()
+    return {"total": total, "by_path": {path: count for path, count in by_path}}
 
 
 @app.get("/api/health")

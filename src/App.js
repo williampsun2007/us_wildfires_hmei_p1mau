@@ -8,6 +8,7 @@ import About from './components/About';
 import Partners from './components/Partners';
 import Methodology from './components/Methodology';
 import { apiCall } from './utils/api';
+import { trackPageview } from './utils/analytics';
 import './styles/style.css';
 
 const PM25_LAYERS = ['average', 'max', 'pop_weighted'];
@@ -59,6 +60,11 @@ function App() {
       setMortalitySubMetric('total');
     }
   }, [activeLayer]);
+
+  useEffect(() => {
+    const titles = { map: 'Map', about: 'About', partners: 'Partners', methodology: 'Data & Methodology' };
+    trackPageview(`/${activeTab}`, titles[activeTab]);
+  }, [activeTab]);
 
   // Handler for layer selection
   const handleSetActiveLayer = (layer) => {

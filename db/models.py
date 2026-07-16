@@ -1,5 +1,5 @@
 from datetime import date
-from sqlalchemy import Column, Integer, Float, String, Boolean, Date, ForeignKey, UniqueConstraint, extract, func, Index
+from sqlalchemy import Column, Integer, Float, String, Boolean, Date, DateTime, ForeignKey, UniqueConstraint, extract, func, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship, column_property
 from sqlalchemy.ext.hybrid import hybrid_property
@@ -319,6 +319,14 @@ class DecompositionSummary(Base):
     __table_args__ = (
         UniqueConstraint("fips", "start_year", "end_year", "age_group", name="_unique_decomp_entry"),
     )
+
+class PageView(Base):
+    __tablename__ = "page_views"
+
+    id = Column(Integer, primary_key=True)
+    path = Column(String, nullable=False, index=True)
+    title = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
 
 class FireAttributionBin(Base):
     __tablename__ = "fire_attribution_bin"
