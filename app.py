@@ -10,12 +10,14 @@ import csv
 from pathlib import Path
 from datetime import datetime, date
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Literal
 from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+import time
 
 # Third-party imports
 import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Depends, status, BackgroundTasks, APIRouter
+from fastapi import FastAPI, HTTPException, Query, Depends, status, BackgroundTasks, APIRouter, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import Response
@@ -312,9 +314,16 @@ class DownloadRequest(BaseModel):
     age_groups: Optional[str] = None  # For mortality/yll only
 
 
+VALID_PAGEVIEW_PATHS = {
+    "/map": "Map",
+    "/about": "About",
+    "/partners": "Partners",
+    "/methodology": "Data & Methodology",
+}
+
+
 class PageViewRequest(BaseModel):
-    path: str
-    title: Optional[str] = None
+    path: Literal["/map", "/about", "/partners", "/methodology"]
 
 
 # Application lifespan
@@ -2219,11 +2228,32 @@ def insert_pageview(path: str, title: Optional[str]):
         db.close()
 
 
+# Simple in-memory per-IP rate limit for the tracking endpoint. Paths are
+# restricted to a fixed allowlist (see VALID_PAGEVIEW_PATHS), so the only
+# remaining thing to bound is volume of legitimate-looking requests.
+_pageview_hits: dict[str, list[float]] = defaultdict(list)
+PAGEVIEW_RATE_LIMIT = 10
+PAGEVIEW_RATE_WINDOW_SECS = 60
+
+
+def _is_rate_limited(ip: str) -> bool:
+    now = time.time()
+    recent = [t for t in _pageview_hits[ip] if now - t < PAGEVIEW_RATE_WINDOW_SECS]
+    recent.append(now)
+    _pageview_hits[ip] = recent
+    return len(recent) > PAGEVIEW_RATE_LIMIT
+
+
 @app.post("/api/track-view")
-async def track_view(view: PageViewRequest, background_tasks: BackgroundTasks):
-    """Records a pageview for basic visit counting. The insert happens in the
-    background so this always returns immediately regardless of DB latency."""
-    background_tasks.add_task(insert_pageview, view.path, view.title)
+async def track_view(view: PageViewRequest, request: Request, background_tasks: BackgroundTasks):
+    """Records a pageview for basic visit counting. Path is restricted to a
+    fixed allowlist and requests are rate-limited per IP to guard against
+    spam/inflation. The insert happens in the background so this always
+    returns immediately regardless of DB latency."""
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    if _is_rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail="Too many requests")
+    background_tasks.add_task(insert_pageview, view.path, VALID_PAGEVIEW_PATHS[view.path])
     return {"status": "ok"}
 
 

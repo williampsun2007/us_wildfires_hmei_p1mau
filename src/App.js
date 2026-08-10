@@ -62,8 +62,7 @@ function App() {
   }, [activeLayer]);
 
   useEffect(() => {
-    const titles = { map: 'Map', about: 'About', partners: 'Partners', methodology: 'Data & Methodology' };
-    trackPageview(`/${activeTab}`, titles[activeTab]);
+    trackPageview(`/${activeTab}`);
   }, [activeTab]);
 
   // Handler for layer selection
