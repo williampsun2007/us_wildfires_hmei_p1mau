@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import App from './App';
+import PageViewLog from './components/PageViewLog';
 
 // Create a theme instance
 const theme = createTheme({
@@ -41,12 +42,17 @@ const theme = createTheme({
 const container = document.getElementById('root');
 const root = createRoot(container);
 
+// Unlisted admin route - not linked from any nav, reachable directly by URL.
+// nginx already falls back unknown paths to index.html, so no router
+// dependency is needed for this one hidden page.
+const isPageViewAdmin = window.location.pathname.endsWith('/admin/pageviews');
+
 // Render the app
 root.render(
   <React.StrictMode>
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <App />
+      {isPageViewAdmin ? <PageViewLog /> : <App />}
     </ThemeProvider>
   </React.StrictMode>
 );

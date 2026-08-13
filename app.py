@@ -26,6 +26,7 @@ from sqlalchemy import func, and_, extract
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import QueuePool
+from iptocc import country_code
 import geopandas as gpd
 from shapely.geometry import mapping
 import gzip
@@ -382,6 +383,20 @@ def get_db():
         )
     finally:
         db.close()
+
+
+def _get_client_ip(request: Request) -> str:
+    """Resolve the real client IP. X-Real-IP is set unconditionally by the
+    Apache edge proxy from its own REMOTE_ADDR (see apache-config.conf) and
+    passed through untouched by nginx, so it's trustworthy end-to-end for
+    both rate limiting and country lookups. Fall back to legacy
+    X-Forwarded-For parsing only for direct/local access that bypasses that
+    proxy chain (e.g. local dev)."""
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+
 
 # Helper functions
 
@@ -2214,12 +2229,18 @@ async def export_download_requests(api_key: str = Query(..., description="Admin 
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def insert_pageview(path: str, title: Optional[str]):
+def insert_pageview(path: str, title: Optional[str], ip: str):
     """Records a pageview. Runs in a background task with its own short-lived
-    session so it never holds up the request/response cycle."""
+    session so it never holds up the request/response cycle. `ip` is used
+    only to resolve a country via iptocc (offline, data embedded in the
+    wheel, no network call) and is never itself persisted."""
+    try:
+        country = country_code(ip)
+    except Exception:
+        country = None  # unresolvable IP (e.g. "unknown", private range, malformed) - store no country rather than fail the insert
     db = SessionLocal()
     try:
-        db.add(PageView(path=path, title=title))
+        db.add(PageView(path=path, title=title, country=country))
         db.commit()
     except SQLAlchemyError as e:
         logger.error("Failed to record pageview: %s", str(e))
@@ -2250,10 +2271,10 @@ async def track_view(view: PageViewRequest, request: Request, background_tasks: 
     fixed allowlist and requests are rate-limited per IP to guard against
     spam/inflation. The insert happens in the background so this always
     returns immediately regardless of DB latency."""
-    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown").split(",")[0].strip()
+    client_ip = _get_client_ip(request)
     if _is_rate_limited(client_ip):
         raise HTTPException(status_code=429, detail="Too many requests")
-    background_tasks.add_task(insert_pageview, view.path, VALID_PAGEVIEW_PATHS[view.path])
+    background_tasks.add_task(insert_pageview, view.path, VALID_PAGEVIEW_PATHS[view.path], client_ip)
     return {"status": "ok"}
 
 
@@ -2285,6 +2306,52 @@ async def get_view_counts(
     total = db.query(func.count(PageView.id)).scalar()
     by_path = db.query(PageView.path, func.count(PageView.id)).group_by(PageView.path).all()
     return {"total": total, "by_path": {path: count for path, count in by_path}}
+
+
+def require_admin_key(request: Request, api_key: Optional[str] = Query(None)):
+    """Gates admin-only endpoints behind the ADMIN_API_KEY shared secret.
+    Accepts either the X-Admin-Key header (used by the frontend admin page,
+    so the key doesn't end up in server access logs) or the `api_key` query
+    param (matching the convention used by /api/view-counts and
+    /api/download-requests/export, and useful for visiting the endpoint
+    directly by URL). Fails closed if ADMIN_API_KEY itself isn't configured."""
+    admin_api_key = os.getenv("ADMIN_API_KEY")
+    if not admin_api_key:
+        raise HTTPException(status_code=500, detail="Admin API key not configured on server")
+    supplied = request.headers.get("x-admin-key") or api_key
+    if supplied != admin_api_key:
+        logger.warning("Invalid API key attempt to access pageview log")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+@app.get("/api/pageviews", dependencies=[Depends(require_admin_key)])
+async def get_pageviews(
+    limit: int = Query(200, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db)
+):
+    """
+    Admin-only: lists individual pageview rows (path, title, country,
+    timestamp), newest first. Protected by require_admin_key since this
+    exposes granular, timestamped visit data.
+    """
+    
+    rows = (
+        db.query(PageView)
+        .order_by(PageView.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "path": row.path,
+            "title": row.title,
+            "country": row.country,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
+        for row in rows
+    ]
 
 
 @app.get("/api/health")

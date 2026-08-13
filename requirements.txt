@@ -36,6 +36,7 @@ h11==0.16.0
 httptools==0.6.4
 idna==3.10
 ipykernel==6.29.5
+iptocc==3.3.100
 ipython==9.4.0
 ipython_pygments_lexers==1.1.1
 isort==6.0.1

@@ -326,6 +326,7 @@ class PageView(Base):
     id = Column(Integer, primary_key=True)
     path = Column(String, nullable=False, index=True)
     title = Column(String, nullable=True)
+    country = Column(String, nullable=True)  # ISO-3166 country code resolved from visitor IP at insert time; raw IP is never stored
     created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
 
 class FireAttributionBin(Base):

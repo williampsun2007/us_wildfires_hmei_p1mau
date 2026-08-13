@@ -1,5 +1,5 @@
 // Basic server-side pageview tracking (same-origin, no third-party scripts)
-const getApiBaseUrl = () => {
+export const getApiBaseUrl = () => {
   if (process.env.NODE_ENV === 'production') {
     return process.env.REACT_APP_API_BASE_URL || window.location.origin;
   }
